@@ -11,6 +11,8 @@ import argparse
 import glob
 import random
 from natsort import natsorted
+import multiprocessing
+from functools import partial
 import multipath
 import time
 parser = argparse.ArgumentParser()
@@ -24,15 +26,16 @@ parser.add_argument("-w", "--weights", type=str, help="Weights for circuit (comm
 parser.add_argument("-r", "--ranges", type=str, help="Range of cells after of which the wr or wrwc schduler design again", default='10,60') 
 parser.add_argument("-p",'--path', nargs='+', help=' fiPath of folder with instancesles (wang_format)')
 parser.add_argument("-a", "--alpha", type=str, help="alpha values for the Dirichlet function default np.ones(m)", default='1,1,1')
+parser.add_argument("-x", "--offset", type=str, default=0)
 
-
+NUM_PROCESSES = 24
 
 schemes = ['round_robin','random','weighted_random', 'in_and_out', 'batched_weighted_random', 'bwr_var_paths', 'bwr_var_paths_strict', 'bwr_blocked', 'wr_var_paths', 'rr_var_paths', 'random_var_paths']
 bwoh = [0]
 def genRRlist(m,length,n):
     out = []
-    for i in xrange (0,length):
-        for j in xrange(0,n):
+    for i in xrange (0,length): 
+        for j in xrange(0,n): 
             for k in xrange(0,m):
                 out.append(j)
     return out
@@ -53,13 +56,13 @@ def saveInFile(input_name, inst,r,outfolder):
         outfiles[r[i]].write('\t'.join(x_arrstr) + '\n')
         #jointfile.write('\t'.join(x_arrstr) + '\n')
 
-def saveInFile2(input_name,split_inst,r,outfolder):
+def saveInFile2(input_name,split_inst,r,outfolder,offset):
 
     numberOfFiles = max(r)+1 # How many files, one per route
     outfiles = []
     for k in xrange(0,numberOfFiles):
         input_name2 = input_name.split('.cell')[0].split('/')[-1]
-        out_file_name = outfolder + "/" + input_name2 + "_split_" + str(k) + '.cell'
+        out_file_name = outfolder + "/" + input_name2 + "_split_" + str(k+offset) + '.cell'
         outfiles.append(open(out_file_name,'w'))
 
     jointfilename = outfolder + "/" + input_name.split('.cell')[0].split('/')[-1] + "_join"+ '.cell'
@@ -122,9 +125,12 @@ def sim_round_robin(n,latencies,traces,outfiles,cpercirc):
         saveInFile2(instance_file,new_instance,routes,outfiles) # Save the transformed current instance according to thei respective routes
 
 
-def sim_weighted_random(n,latencies,traces,outfiles,weights,alphas):
+def sim_weighted_random(n,latencies,outfiles,weights,alphas,traces):
     print "Simulating Weighted Random multi-path scheme... alphas:", alphas
-    traces_file = natsorted(glob.glob(traces[0]+'/*.cell'))
+    #traces_file = natsorted(glob.glob(traces[0]+'/*.cell'))
+    traces_file = [traces]
+    print(traces_file)
+    print(n, alphas)
     for instance_file in traces_file: 
         instance = open(instance_file,'r')
         instance = instance.read().split('\n')[:-1]
@@ -142,12 +148,12 @@ def sim_weighted_random(n,latencies,traces,outfiles,weights,alphas):
             packet = instance[i]
             packet = packet.replace(' ','\t') #For compatibility when data is space sperated not tab separated
             direction = multipath.getDirfromPacket(packet)			
-            if (direction == 1):
+            if (direction >= 1):
                     routes_server.append(-1) # Just to know that for this packet the exit does not decide the r$
                     last_client_route =  np.random.choice(np.arange(0,n),p = w_out)
                     routes_client.append(last_client_route)
 
-            if (direction == -1):
+            if (direction <= -1):
                     routes_client.append(-1) # Just to know that for this packet the client does not decide the$
                     last_server_route =  np.random.choice(np.arange(0,n),p = w_in)
                     routes_server.append(last_server_route)
@@ -175,10 +181,10 @@ def sim_in_and_out(n,latencies,traces,outfiles):
             packet = packet.replace(' ','\t') #For compatibility when data is space sperated not tab separated
             direction = multipath.getDirfromPacket(packet)
 
-            if (direction == 1): # if it is outgoing set a fixed route
+            if (direction >= 1): # if it is outgoing set a fixed route
                 routes_server.append(-1) # Just to know that for this packet the exit does not decide the route
                 routes_client.append(0) 
-            if (direction == -1): # if it is incomming just sent through a random route, it'd better trying to have same amount of 
+            if (direction <= -1): # if it is incomming just sent through a random route, it'd better trying to have same amount of 
                 routes_server.append(1) # Just to know that for this packet the exit does not decide the route
                 routes_client.append(-1)
         routes = multipath.joingClientServerRoutes(routes_client,routes_server)
@@ -186,13 +192,16 @@ def sim_in_and_out(n,latencies,traces,outfiles):
         new_instance = multipath.simulate(instance,mplatencies,routes) # Simulate the multipath effect for the given latencies and routes
         saveInFile2(instance_file,new_instance,routes,outfiles)
 
-def sim_bwr(n,latencies,traces,outfiles,range_, alphas):
+def sim_bwr(n,latencies,outfiles,range_, alphas, offset, traces):
     print "Simulating BWR multi-path scheme..."
-    traces_file = natsorted(glob.glob(traces[0]+'/*.cell'))
+    #traces_file = natsorted(glob.glob(traces[0]+'/*.cell'))
+    traces_file = [traces]
     ranlow = int(range_.split(',')[0])
     ranhigh = int(range_.split(',')[1])
 
     for instance_file in traces_file:
+        #print("n: {}".format(n))
+        #print("alphas: {}".format(alphas))
         w_out = multipath.getWeights(n, alphas)
         w_in = multipath.getWeights(n, alphas)
         instance = open(instance_file,'r')
@@ -202,6 +211,8 @@ def sim_bwr(n,latencies,traces,outfiles,range_, alphas):
         routes_server = []
         sent_incomming = 0
         sent_outgoing = 0
+        #print("w_out: {}".format(w_out))
+        #print("w_in: {}".format(w_in))
         last_client_route =  np.random.choice(np.arange(0,n),p = w_out)
         last_server_route = np.random.choice(np.arange(0,n),p = w_in)
         for i in xrange(0,len(instance)):
@@ -209,7 +220,7 @@ def sim_bwr(n,latencies,traces,outfiles,range_, alphas):
             packet = packet.replace(' ','\t') #For compatibility when data is space sperated not tab separated
             direction = multipath.getDirfromPacket(packet)
 
-            if (direction == 1):
+            if (direction >= 1):
                 routes_server.append(-1) # Just to know that for this packet the exit does not decide the route
                 sent_outgoing += 1
                 C = random.randint(ranlow,ranhigh) #After how many cells the scheduler sets new weights
@@ -217,19 +228,19 @@ def sim_bwr(n,latencies,traces,outfiles,range_, alphas):
                 if (sent_outgoing % C == 0): #After C cells are sent, change the circuits
                             last_client_route =  np.random.choice(np.arange(0,n),p = w_out)
 
-            if (direction == -1): 
+            if (direction <= -1): 
                 routes_client.append(-1) # Just to know that for this packet the client does not decide the route
                 routes_server.append(last_server_route)
                 sent_incomming += 1
                 C = random.randint(ranlow,ranhigh) #After how many cells the scheduler sets new weights
                 if (sent_incomming % C == 0): #After C cells are sent, change the circuits
-                     last_server_route = np.random.choice(np.arange(0,n),p = w_in)
+                    last_server_route = np.random.choice(np.arange(0,n),p = w_in)
 
 
         routes = multipath.joingClientServerRoutes(routes_client,routes_server)
         ##### Routes Created, next to the multipath simulation
         new_instance = multipath.simulate(instance,mplatencies,routes) # Simulate the multipath effect for the given latencies and routes
-        saveInFile2(instance_file,new_instance,routes,outfiles)
+        saveInFile2(instance_file,new_instance,routes,outfiles, offset)
         
 def sim_bwr_blocked(n,latencies,traces,outfiles,range_):
     print "Simulating BWR multi-path scheme blocking last selected route..."
@@ -256,7 +267,7 @@ def sim_bwr_blocked(n,latencies,traces,outfiles,range_):
             packet = packet.replace(' ','\t') #For compatibility when data is space sperated not tab separated
             direction = multipath.getDirfromPacket(packet)
 
-            if (direction == 1):
+            if (direction >= 1):
                 routes_server.append(-1) # Just to know that for this packet the exit does not decide the route
                 sent_outgoing += 1
                 C = random.randint(ranlow,ranhigh) #After how many cells the scheduler sets new weights
@@ -268,7 +279,7 @@ def sim_bwr_blocked(n,latencies,traces,outfiles,range_):
                             last_client_route = client_route
                             break # In this way, we block the possibility of choosing the same circuit previously chosen
                             
-            if (direction == -1): 
+            if (direction <= -1): 
                 routes_client.append(-1) # Just to know that for this packet the client does not decide the route
                 routes_server.append(last_server_route)
                 sent_incomming += 1
@@ -313,14 +324,14 @@ def sim_bwr_var_paths(n,nmin,latencies,traces,outfiles,range_, alphas):
             packet = instance[i]
             packet = packet.replace(' ','\t') #For compatibility when data is space sperated not tab separated
             direction = multipath.getDirfromPacket(packet)
-            if (direction == 1):
+            if (direction >= 1):
                 routes_server.append(-1) # Just to know that for this packet the exit does not decide the r$
                 sent_outgoing += 1
                 C = random.randint(ranlow,ranhigh) #After how many cells the scheduler sets new weights
                 routes_client.append(last_client_route)
                 if (sent_outgoing % C == 0): #After C cells are sent, change the circuits
                     last_client_route =  np.random.choice(np.arange(0,n_random),p = w_out)
-            if (direction == -1):
+            if (direction >= -1):
                 routes_client.append(-1) # Just to know that for this packet the client does not decide the$
                 routes_server.append(last_server_route)
                 sent_incomming += 1
@@ -374,7 +385,7 @@ def sim_bwr_var_paths_strict(n,nmin,latencies,traces,outfiles,range_):
             packet = instance[i]
             packet = packet.replace(' ','\t') #For compatibility when data is space sperated not tab separated
             direction = multipath.getDirfromPacket(packet)
-            if (direction == 1):
+            if (direction >= 1):
                 routes_server.append(-1) # Just to know that for this packet the exit does not decide the r$
                 sent_outgoing += 1
                 C = random.randint(ranlow,ranhigh) #After how many cells the scheduler sets new weights
@@ -386,7 +397,7 @@ def sim_bwr_var_paths_strict(n,nmin,latencies,traces,outfiles,range_):
                             last_client_route = client_route
                             break # In this way, we block the possibility of choosing the same circuit previously chosen
                     
-            if (direction == -1):
+            if (direction <= -1):
                 routes_client.append(-1) # Just to know that for this packet the client does not decide the$
                 routes_server.append(last_server_route)
                 sent_incomming += 1
@@ -428,12 +439,12 @@ def sim_wr_var_paths(n,nmin,latencies,traces,outfiles):
             packet = instance[i]
             packet = packet.replace(' ','\t') #For compatibility when data is space sperated not tab separated
             direction = multipath.getDirfromPacket(packet)
-            if (direction == 1):
+            if (direction >= 1):
                     routes_server.append(-1) # Just to know that for this packet the exit does not decide the r$
                     last_client_route =  np.random.choice(np.arange(0,n_random),p = w_out)
                     routes_client.append(last_client_route)
 
-            if (direction == -1):
+            if (direction <= -1):
                     routes_client.append(-1) # Just to know that for this packet the client does not decide the$
                     last_server_route =  np.random.choice(np.arange(0,n_random),p = w_in)
                     routes_server.append(last_server_route)
@@ -484,6 +495,7 @@ if __name__ == '__main__':
     weights_ = args.weights
     range_ = args.ranges
     alpha_ = args.alpha
+    offset_ = int(args.offset)
     val = 0
     starttime = time.time()
     if (scheme_ == 'random'):
@@ -493,13 +505,31 @@ if __name__ == '__main__':
         sim_round_robin(paths_, latencies_,traces_,outfolder_, cells_per_circuit_)
 
     if (scheme_ == 'weighted_random'):
-        sim_weighted_random(paths_, latencies_,traces_,outfolder_, weights_, alpha_)
+        traces_file = natsorted(glob.glob(traces_[0]+'/*.cell'))
 
-     if (scheme_ == 'in_and_out'):
+        pool = multiprocessing.Pool(NUM_PROCESSES)
+        func = partial(sim_weighted_random, paths_, latencies_, outfolder_, weights_, alpha_)
+        pool.map(func, traces_file)
+        pool.close()
+        pool.join()
+
+        #sim_weighted_random(paths_, latencies_,outfolder_, weights_, alpha_, traces_)
+
+
+
+    if (scheme_ == 'in_and_out'):
         sim_in_and_out(paths_, latencies_,traces_,outfolder_)
 
     if (scheme_ == 'batched_weighted_random'):
-        sim_bwr(paths_, latencies_,traces_,outfolder_,range_, alpha_)
+        #sim_bwr(paths_, latencies_,outfolder_,range_, alpha_, traces_)
+        
+        traces_file = natsorted(glob.glob(traces_[0]+'/*.cell'))
+        pool = multiprocessing.Pool(NUM_PROCESSES)
+        func = partial(sim_bwr, paths_, latencies_, outfolder_, range_, alpha_, offset_)
+        pool.map(func, traces_file)
+        pool.close()
+        pool.join()
+        
 
     if (scheme_ == 'bwr_var_paths'): 
         sim_bwr_var_paths(paths_, paths_min, latencies_,traces_,outfolder_,range_, alpha_)

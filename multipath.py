@@ -68,13 +68,13 @@ def simulate(instance,mplatencies,routes):
 		# time_last_incomming = time of the las in-cell before the out-cell was on client, it is used + delta to set the time of the outgoing cell
 		########################################################################################################################################################
 		new_packet = np.array([])			
-		if (direction == -1):
+		if (direction <= -1):
 			new_packet=[original_time - delay + chosen_latency,direction,size,route]
 			#print direction,original_time,original_time - delay + chosen_latency
-		if (direction == 1 and last_packet == -1): # If is the first out in the burst, it referes to the last icomming time
+		if (direction >= 1 and last_packet <= -1): # If is the first out in the burst, it referes to the last icomming time
 			#print direction,original_time,time_last_incomming + delta
 			new_packet=[time_last_incomming + delta,direction,size,route]
-		if (direction == 1 and last_packet == 1): # If we are in an out burst, refers to the last out
+		if (direction >= 1 and last_packet >= 1): # If we are in an out burst, refers to the last out
 			#print direction,original_time,last_time + delta
 			new_packet=[last_time + delta,direction,size,route]
 		new_trace.append(new_packet)
